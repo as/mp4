@@ -37,9 +37,10 @@ var (
 	initbox = flag.String("init", "", "write the init box to this location instead of stdout")
 	fast    = flag.Bool("fast", false, "when using init, prevents parsing the mp4 past the moov atom")
 
-	renum = flag.Bool("renum", false, "assume input files are related fragments and realign based on first one and subsequent durations computed")
- debug = flag.Bool("debug", false, "debug output")
- verbose = flag.Bool("v", false, "verbose output")
+	renum   = flag.Bool("renum", false, "assume input files are related fragments and realign based on first one and subsequent durations computed")
+	debug   = flag.Bool("debug", false, "debug output")
+	verbose = flag.Bool("v", false, "verbose output")
+	clamp   = flag.Int("clamp", 9999999, "limit the number of track identifiers printed in verbose mode, setting it to a number like 5 will only print the first and last 5 track info fields")
 )
 
 var level = -1
@@ -61,25 +62,25 @@ var (
 	lastdss, lastdsd uint32
 	lasttrack        uint32
 
-	nread = 0
+	nread    = 0
 	moovsize = 0
 
 	// track to timescale, as parsed from the moov atom
-	track2ts = map[uint32]uint32{}
-	track2dur = map[uint32]int{}
+	track2ts   = map[uint32]uint32{}
+	track2dur  = map[uint32]int{}
 	track2size = map[uint32]int{}
-	track2ept = map[uint32]uint64{}
-	sidxctr uint64
-	tracksize int
+	track2ept  = map[uint32]uint64{}
+	sidxctr    uint64
+	tracksize  int
 )
 
 func makesidx(t uint32) (atom []byte) {
-	defer func(){ sidxctr += uint64(len(atom)) }()
+	defer func() { sidxctr += uint64(len(atom)) }()
 	a := NewAtom(
 		"sidx", uint32(1<<24), // 4+4+4 (12)
 		t, track2ts[t], // 4+4 (20)
 		track2ept[t], sidxctr, // 8+8 (36)
-		uint32(1), // 2 + 2 (40)
+		uint32(1),                                                   // 2 + 2 (40)
 		uint32(tracksize), uint32(track2dur[t]), uint32(0x80000000), // 4+4+4 (52)
 	)
 	return a.Bytes()
@@ -89,14 +90,15 @@ type hdr struct {
 	Len  int32
 	Type [4]byte
 }
+
 func (h *hdr) String() string { return string(h.Type[:]) }
 
-type Atom struct{
+type Atom struct {
 	hdr
 	data bytes.Buffer
 }
 
-func (a *Atom) Bytes() []byte{
+func (a *Atom) Bytes() []byte {
 	p := a.data.Bytes()
 	binary.BigEndian.PutUint32(p[:4], uint32(len(p)))
 	return p
@@ -106,7 +108,7 @@ func (a *Atom) Add(data ...any) {
 	encode(&a.data, data...)
 }
 
-func NewAtom(kind string, data ...any) (a Atom){
+func NewAtom(kind string, data ...any) (a Atom) {
 	a.data.Write(make([]byte, 8))
 	copy(a.data.Bytes()[4:8], kind)
 	a.Add(data...)
@@ -114,7 +116,6 @@ func NewAtom(kind string, data ...any) (a Atom){
 }
 
 var multiout = false
-
 
 func main() {
 	flag.Parse()
@@ -164,57 +165,57 @@ func main() {
 			}
 		}
 	}
-	for k, v := range track2ts{
-		fmt.Fprintf(os.Stderr, "track=%d ts=%d dur=%d size=%d\n", k,v, track2dur[k], uint32(tracksize))
+	for k, v := range track2ts {
+		fmt.Fprintf(os.Stderr, "track=%d ts=%d dur=%d size=%d\n", k, v, track2dur[k], uint32(tracksize))
 	}
 	sidx := make([][]byte, len(track2ts))
-	for i := len(track2ts)-1; i >= 0; i--{
-		sidx[i] = makesidx(uint32(i+1))
+	for i := len(track2ts) - 1; i >= 0; i-- {
+		sidx[i] = makesidx(uint32(i + 1))
 		fmt.Fprintf(os.Stderr, "track=%d sidx size=%d val=%x\n", i+1, len(sidx[i]), sidx[i])
 	}
 }
 
 func encode(w io.Writer, v ...any) error {
-		for _, v := range v {
-			switch v := v.(type) {
-			case io.Reader:
-				io.Copy(w, v)
-			case []byte:
-				io.Copy(w, bytes.NewReader(v))
-			case *Varint:
-				binary.Write(w, binary.BigEndian, v.Value())
-			case Varint:
-				binary.Write(w, binary.BigEndian, v.Value())
-			case any:
-				binary.Write(w, binary.BigEndian, v)
-			}
+	for _, v := range v {
+		switch v := v.(type) {
+		case io.Reader:
+			io.Copy(w, v)
+		case []byte:
+			io.Copy(w, bytes.NewReader(v))
+		case *Varint:
+			binary.Write(w, binary.BigEndian, v.Value())
+		case Varint:
+			binary.Write(w, binary.BigEndian, v.Value())
+		case any:
+			binary.Write(w, binary.BigEndian, v)
 		}
-		return nil
+	}
+	return nil
 }
 
 func bread(r io.Reader, h *hdr, dst ...any) error {
+	if dst == nil {
+		dst = []any{h}
+	}
+	for _, dst := range dst {
 		if dst == nil {
-			dst = []any{h}
+			dst = h
 		}
-		for _, dst := range dst {
-			if dst == nil {
-				dst = h
-			}
-			if v, ok := dst.(*Varint); ok {
-				dst = v.Ptr()
-			}
-			err := binary.Read(r, binary.BigEndian, dst)
-			if err != nil {
-				return err
-			}
+		if v, ok := dst.(*Varint); ok {
+			dst = v.Ptr()
 		}
-		return nil
+		err := binary.Read(r, binary.BigEndian, dst)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-type parser struct{
+type parser struct {
 	level int
 
-	in io.Reader
+	in  io.Reader
 	err io.Reader
 	out io.Writer
 }
@@ -256,7 +257,7 @@ func read(dir string, r io.Reader) {
 			fmt.Fprintf(stderr, "%s%s "+fm, v...)
 		}
 		vprintf := func(fm string, v ...any) {
-			if *verbose{
+			if *verbose {
 				printf(fm, v...)
 			}
 		}
@@ -410,23 +411,23 @@ func read(dir string, r io.Reader) {
 			write(h, vflag, nelem)
 			first, samples, sdi := uint32(0), uint32(0), uint32(0)
 			printf("%q	vflags=%x nelem=%d \n", t, vflag, nelem)
-			for i := 1; i <= int(nelem); i++{
+			for i := 1; i <= int(nelem); i++ {
 				bread(&first, &samples, &sdi)
-				if i < 5 || i>int(nelem)-5{
-				vprintf("%q	i=%d first=%d samples=%d sdi=%d \n", t, i, first, samples, sdi)
+				if i < 5 || i > int(nelem)-5 {
+					vprintf("%q	i=%d first=%d samples=%d sdi=%d \n", t, i, first, samples, sdi)
 				}
 				write(first, samples, sdi)
 			}
-		case "stco": 
+		case "stco":
 			vflag, nelem := uint32(0), uint32(0)
 			bread(&vflag, &nelem)
 			write(h, vflag, nelem)
 			printf("%q	vflags=%x nelem=%d \n", t, vflag, nelem)
 			co := uint32(0)
-			for i := 1; i <= int(nelem); i++{
+			for i := 1; i <= int(nelem); i++ {
 				bread(&co)
-				if i < 125 || i>int(nelem)-5{
-				vprintf("%q	sample=%d coffset=%d\n", t, i, co)
+				if i < *clamp || i > int(nelem)-*clamp {
+					vprintf("%q	sample=%d coffset=%d\n", t, i, co)
 				}
 				write(co)
 			}
@@ -435,12 +436,12 @@ func read(dir string, r io.Reader) {
 			bread(&vflag, &size, &count)
 			write(h, vflag, size, count)
 			printf("%q	vflags=%x size=%d count=%d\n", t, vflag, size, count)
-			if size == uint32(0){
-				for i := 1; i <= int(count); i++{
+			if size == uint32(0) {
+				for i := 1; i <= int(count); i++ {
 					bread(&size)
-				if i < 125 || i>int(count)-5{
-					vprintf("%q	sample=%d size=%d\n", t, i, size)
-				}
+					if i < *clamp || i > int(count)-*clamp {
+						vprintf("%q	sample=%d size=%d\n", t, i, size)
+					}
 					write(size)
 				}
 			}
@@ -450,26 +451,26 @@ func read(dir string, r io.Reader) {
 			write(h, vflag, count)
 			scount, sdelta := uint32(0), uint32(0)
 			printf("%q	vflags=%x count=%d \n", t, vflag, count)
-				for i := 1; i <= int(count); i++{
-					bread(&scount, &sdelta)
-				if i < 5 || i>int(count)-5{
+			for i := 1; i <= int(count); i++ {
+				bread(&scount, &sdelta)
+				if i < *clamp || i > int(count)-*clamp {
 					vprintf("%q	entry=%d scount=%d sdelta=%d\n", t, i, scount, sdelta)
 				}
-					write(scount, sdelta)
-				}
+				write(scount, sdelta)
+			}
 		case "stss": // sync sample box
 			vflag, count, isample := uint32(0), uint32(0), uint32(0)
 			bread(&vflag, &count)
 			write(h, vflag, count)
 			printf("%q	vflags=%x isamples=%d\n", t, vflag, count)
-			for i := 0; i < int(count); i++{
+			for i := 0; i < int(count); i++ {
 				bread(&isample)
-				if i < 5 || i>int(count)-5{
+				if i < *clamp || i > int(count)-*clamp {
 					vprintf("%q	entry=%d iframe=%d\n", t, i, isample)
 				}
 				write(isample)
 			}
-			
+
 		case "trak", "mdia", "minf", "stbl":
 			write(h)
 			read(dir+"/"+t, io.LimitReader(r, int64(h.Len)-8))
